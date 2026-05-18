@@ -1,10 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import dynamic from "next/dynamic";
 import SearchBar from "@/components/SearchBar";
 import PropertyCard from "@/components/PropertyCard";
 import ImageEditor from "@/components/ImageEditor";
 import { Property } from "@/types";
+
+const WorldViewer = dynamic(() => import("@/components/WorldViewer"), { ssr: false });
+
+interface WorldEntry {
+  worldId: string;
+  displayName: string;
+  createdAt: string | null;
+  thumbnailUrl: string | null;
+}
+
+interface WorldAssets {
+  worldId: string;
+  displayName: string;
+  splatUrl: string | null;
+  panoUrl: string | null;
+  metricScaleFactor: number;
+  groundPlaneOffset: number;
+}
+
+interface WalkthroughEntry {
+  id: string;
+  videoUrl: string;
+  propertyAddress: string;
+  city: string;
+  state: string;
+  photoUrl: string;
+  createdAt: string;
+}
 
 type SearchState =
   | { status: "idle" }
@@ -13,9 +42,38 @@ type SearchState =
   | { status: "error"; message: string };
 
 export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<"search" | "worlds" | "walkthroughs">("search");
   const [searchState, setSearchState] = useState<SearchState>({ status: "idle" });
   const [selectedProperty, setSelectedProperty] = useState<Property | null>(null);
   const [loadingPropertyId, setLoadingPropertyId] = useState<string | null>(null);
+  const [worlds, setWorlds] = useState<WorldEntry[]>([]);
+  const [worldsLoading, setWorldsLoading] = useState(false);
+  const [activeWorld, setActiveWorld] = useState<WorldAssets | null>(null);
+  const [walkthroughs, setWalkthroughs] = useState<WalkthroughEntry[]>([]);
+  const [activeWalkthrough, setActiveWalkthrough] = useState<WalkthroughEntry | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "worlds") return;
+    setWorldsLoading(true);
+    fetch("/api/marble/worlds")
+      .then((r) => r.json())
+      .then((d: { worlds?: WorldEntry[] }) => { if (d.worlds) setWorlds(d.worlds); })
+      .finally(() => setWorldsLoading(false));
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab !== "walkthroughs") return;
+    try {
+      const saved = JSON.parse(localStorage.getItem("snaphack_walkthroughs") ?? "[]");
+      setWalkthroughs(saved);
+    } catch { setWalkthroughs([]); }
+  }, [activeTab]);
+
+  async function handleOpenWorld(worldId: string) {
+    const res = await fetch(`/api/marble/world?id=${worldId}`);
+    const data = (await res.json()) as WorldAssets & { error?: string };
+    if (res.ok && !data.error) setActiveWorld(data);
+  }
 
   async function handleSelectProperty(property: Property) {
     if (!property.listingId) {
@@ -100,21 +158,204 @@ export default function HomePage() {
             <div className="flex items-center gap-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600">
                 <svg className="h-4 w-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 9.75L12 3l9 6.75V21H3V9.75z"
-                  />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9.75L12 3l9 6.75V21H3V9.75z" />
                 </svg>
               </div>
               <span className="text-lg font-bold text-gray-900">Snaphack</span>
             </div>
-            <span className="text-sm text-gray-500 hidden sm:block">
-              AI-powered real estate visualization
-            </span>
+            <div className="flex items-center gap-1 rounded-xl bg-gray-100 p-1">
+              {(["search", "worlds", "walkthroughs"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+                    activeTab === tab
+                      ? "bg-white text-gray-900 shadow-sm"
+                      : "text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  {tab === "search" ? "Search" : tab === "worlds" ? "My Worlds" : "Walk-Throughs"}
+                </button>
+              ))}
+            </div>
           </div>
         </nav>
+
+        {/* Fullscreen World Viewer */}
+        {activeWorld && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-gray-950">
+            <div className="flex-none flex items-center justify-between px-6 py-4 bg-gray-900/80 backdrop-blur-sm">
+              <div>
+                <p className="text-sm font-semibold text-white">{activeWorld.displayName}</p>
+                <p className="text-xs text-white/50">WASD move · E/Q up/down · Shift fast · drag look</p>
+              </div>
+              <button
+                onClick={() => setActiveWorld(null)}
+                className="rounded-xl p-2 text-white/60 hover:bg-white/10 hover:text-white transition-colors"
+              >
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="flex-1">
+              {activeWorld.splatUrl ? (
+                <WorldViewer
+                  splatUrl={activeWorld.splatUrl}
+                  metricScaleFactor={activeWorld.metricScaleFactor}
+                  groundPlaneOffset={activeWorld.groundPlaneOffset}
+                />
+              ) : (
+                <div className="flex h-full items-center justify-center text-white/40">No 3D data for this world.</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Fullscreen Walk-Through Player */}
+        {activeWalkthrough && (
+          <div className="fixed inset-0 z-50 flex flex-col bg-black">
+            <div className="flex-none flex items-center justify-between px-6 py-4 bg-black/60 backdrop-blur-sm">
+              <div>
+                <p className="text-sm font-semibold text-white">{activeWalkthrough.propertyAddress}</p>
+                <p className="text-xs text-white/50">
+                  {[activeWalkthrough.city, activeWalkthrough.state].filter(Boolean).join(", ")} ·{" "}
+                  {new Date(activeWalkthrough.createdAt).toLocaleDateString()}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={activeWalkthrough.videoUrl}
+                  download="walkthrough.mp4"
+                  className="rounded-xl border border-white/20 px-3 py-1.5 text-xs font-medium text-white hover:bg-white/10 transition-colors"
+                >
+                  Download
+                </a>
+                <button
+                  onClick={() => setActiveWalkthrough(null)}
+                  className="rounded-xl p-2 text-white/60 hover:bg-white/10 hover:text-white transition-colors"
+                >
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-4">
+              <video
+                src={activeWalkthrough.videoUrl}
+                autoPlay
+                loop
+                controls
+                className="max-h-full max-w-full rounded-2xl shadow-2xl"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* My Worlds tab */}
+        {activeTab === "worlds" && (
+          <section className="max-w-7xl mx-auto px-6 py-10">
+            <h2 className="mb-6 text-xl font-bold text-gray-900">My 3D Worlds</h2>
+            {worldsLoading && (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="aspect-video animate-pulse rounded-2xl bg-gray-200" />
+                ))}
+              </div>
+            )}
+            {!worldsLoading && worlds.length === 0 && (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 bg-white py-16 text-center">
+                <svg className="h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+                </svg>
+                <p className="font-medium text-gray-500">No worlds yet</p>
+                <p className="text-sm text-gray-400">Generate one from a listing photo in the Immerse tab.</p>
+              </div>
+            )}
+            {!worldsLoading && worlds.length > 0 && (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {worlds.map((w) => (
+                  <button
+                    key={w.worldId}
+                    onClick={() => handleOpenWorld(w.worldId)}
+                    className="group relative aspect-video overflow-hidden rounded-2xl bg-gray-900 shadow-sm ring-1 ring-gray-200 hover:ring-blue-500 hover:shadow-md transition-all text-left"
+                  >
+                    {w.thumbnailUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={w.thumbnailUrl} alt={w.displayName} className="h-full w-full object-cover opacity-90 group-hover:opacity-100 transition-opacity" />
+                    ) : (
+                      <div className="flex h-full items-center justify-center">
+                        <svg className="h-10 w-10 text-white/20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+                        </svg>
+                      </div>
+                    )}
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3">
+                      <p className="truncate text-sm font-semibold text-white">{w.displayName}</p>
+                      {w.createdAt && (
+                        <p className="text-xs text-white/50">{new Date(w.createdAt).toLocaleDateString()}</p>
+                      )}
+                    </div>
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <span className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-lg">
+                        Enter World
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Walk-Throughs tab */}
+        {activeTab === "walkthroughs" && (
+          <section className="max-w-7xl mx-auto px-6 py-10">
+            <h2 className="mb-6 text-xl font-bold text-gray-900">Walk-Through Videos</h2>
+            {walkthroughs.length === 0 && (
+              <div className="flex flex-col items-center gap-3 rounded-2xl border border-gray-200 bg-white py-16 text-center">
+                <svg className="h-12 w-12 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.723v6.554a1 1 0 01-1.447.894L15 14M4 6h8a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V8a2 2 0 012-2z" />
+                </svg>
+                <p className="font-medium text-gray-500">No walk-throughs yet</p>
+                <p className="text-sm text-gray-400">Generate one from a listing photo in the Immerse tab.</p>
+              </div>
+            )}
+            {walkthroughs.length > 0 && (
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                {walkthroughs.map((wt) => (
+                  <button
+                    key={wt.id}
+                    onClick={() => setActiveWalkthrough(wt)}
+                    className="group relative aspect-video overflow-hidden rounded-2xl bg-gray-900 shadow-sm ring-1 ring-gray-200 hover:ring-blue-500 hover:shadow-md transition-all text-left"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={wt.photoUrl} alt={wt.propertyAddress} className="h-full w-full object-cover opacity-80 group-hover:opacity-60 transition-opacity" />
+                    {/* Play icon overlay */}
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-full bg-black/50 group-hover:bg-blue-600 transition-colors backdrop-blur-sm">
+                        <svg className="h-5 w-5 translate-x-0.5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3">
+                      <p className="truncate text-sm font-semibold text-white">{wt.propertyAddress}</p>
+                      <p className="text-xs text-white/50">
+                        {[wt.city, wt.state].filter(Boolean).join(", ")} · {new Date(wt.createdAt).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Search tab */}
+        {activeTab === "search" && (
+        <>
 
         {/* Hero section */}
         <section className="bg-white border-b border-gray-100">
@@ -263,6 +504,8 @@ export default function HomePage() {
             </div>
           )}
         </section>
+        </>
+        )}
       </main>
     </>
   );

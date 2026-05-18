@@ -26,14 +26,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "At least one furnitureUrl is required" }, { status: 400 });
     }
 
-    // Model accepts max 4 images total (1 room + up to 3 furniture)
-    const cappedFurniture = furnitureUrls.slice(0, 3);
+    // nano-banana-2/edit supports up to 14 images total
+    const cappedFurniture = furnitureUrls.slice(0, 13);
 
     const prompt =
       customPrompt?.trim() ||
-      "Arrange the furniture and decor pieces from the reference images naturally in the room. Maintain realistic proportions, natural lighting, and coherent interior design style.";
+      "The first image is a room. The remaining images are furniture items with their backgrounds removed. Place each furniture item from those reference images into the room — position them naturally on the floor with correct scale, perspective, and lighting to match the room. Keep the exact appearance of each piece.";
 
-    const falRes = await fetch("https://fal.run/fal-ai/flux-pro/kontext/multi", {
+    const falRes = await fetch("https://fal.run/fal-ai/nano-banana-2/edit", {
       method: "POST",
       headers: {
         Authorization: `Key ${falKey}`,
@@ -42,9 +42,7 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({
         image_urls: [roomImageUrl, ...cappedFurniture],
         prompt,
-        num_inference_steps: 28,
-        guidance_scale: 3.5,
-        output_format: "jpeg",
+        num_images: 1,
       }),
     });
 

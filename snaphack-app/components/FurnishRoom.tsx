@@ -7,7 +7,9 @@ interface FurnitureItem {
   id: string;
   localUrl: string;
   falUrl: string | null;
+  bgRemovedUrl: string | null;
   uploading: boolean;
+  processingBg: boolean;
 }
 
 interface FurnishRoomProps {
@@ -15,7 +17,7 @@ interface FurnishRoomProps {
 }
 
 const DEFAULT_PROMPT =
-  "Arrange the furniture and decor pieces from the reference images naturally in the room. Maintain realistic proportions, natural lighting, and coherent interior design style.";
+  "The first image is a room. The remaining images are furniture items with their backgrounds removed. Place each furniture item from those reference images into the room — position them naturally on the floor with correct scale, perspective, and lighting to match the room. Keep the exact appearance of each piece.";
 
 const MAX_FURNITURE = 3; // model accepts max 4 images total (1 room + 3 furniture)
 
@@ -64,6 +66,19 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
     return data.url;
   }
 
+  async function removeBackground(imageUrl: string): Promise<string> {
+    const res = await fetch("/api/bg-remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageUrl }),
+    });
+    const data = (await res.json()) as { imageUrl?: string; error?: string };
+    if (!res.ok || data.error || !data.imageUrl) {
+      throw new Error(data.error ?? "Background removal failed");
+    }
+    return data.imageUrl;
+  }
+
   function handleSlotClick(index: number) {
     const existing = furnitureItems[index];
     if (existing) return; // slot is filled — don't re-open picker
@@ -96,7 +111,9 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
     const slotIndexStr = fileInputRef.current?.dataset.slotIndex;
     const slotIndex = slotIndexStr !== undefined ? parseInt(slotIndexStr, 10) : -1;
 
-    const newItem: FurnitureItem = { id, localUrl, falUrl: null, uploading: true };
+    const newItem: FurnitureItem = {
+      id, localUrl, falUrl: null, bgRemovedUrl: null, uploading: true, processingBg: false,
+    };
 
     setFurnitureItems((prev) => {
       const next = [...prev];
@@ -109,18 +126,36 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
     });
 
     try {
+      // Step 1 — upload to fal storage
       const falUrl = await uploadToFal(file);
       setFurnitureItems((prev) =>
         prev.map((item) =>
-          item.id === id ? { ...item, falUrl, uploading: false } : item
+          item.id === id ? { ...item, falUrl, uploading: false, processingBg: true } : item
         )
       );
+
+      // Step 2 — remove background so the model sees a clean cutout
+      try {
+        const bgRemovedUrl = await removeBackground(falUrl);
+        setFurnitureItems((prev) =>
+          prev.map((item) =>
+            item.id === id ? { ...item, bgRemovedUrl, processingBg: false } : item
+          )
+        );
+      } catch {
+        // bg removal failed — fall back silently to original
+        setFurnitureItems((prev) =>
+          prev.map((item) =>
+            item.id === id ? { ...item, processingBg: false } : item
+          )
+        );
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Upload error";
       console.error("fal upload error:", msg);
       setFurnitureItems((prev) =>
         prev.map((item) =>
-          item.id === id ? { ...item, uploading: false } : item
+          item.id === id ? { ...item, uploading: false, processingBg: false } : item
         )
       );
     }
@@ -135,9 +170,10 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
   }
 
   const isAnyUploading = furnitureItems.some((f) => f.uploading);
+  const isAnyProcessingBg = furnitureItems.some((f) => f.processingBg);
   const hasRoom = Boolean(selectedRoom);
   const hasFurniture = furnitureItems.length > 0;
-  const canGenerate = hasRoom && hasFurniture && !isAnyUploading && !isGenerating;
+  const canGenerate = hasRoom && hasFurniture && !isAnyUploading && !isAnyProcessingBg && !isGenerating;
 
   async function handleGenerate() {
     if (!canGenerate) return;
@@ -146,8 +182,9 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
     setIsGenerating(true);
 
     try {
+      // Prefer bg-removed cutout; fall back to original upload if removal failed
       const furnitureUrls = furnitureItems
-        .map((f) => f.falUrl)
+        .map((f) => f.bgRemovedUrl ?? f.falUrl)
         .filter((url): url is string => url !== null);
 
       if (furnitureUrls.length !== furnitureItems.length) {
@@ -294,32 +331,36 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
                         alt={`Furniture ${i + 1}`}
                         className="h-full w-full object-cover"
                       />
-                      {/* Upload spinner overlay */}
+                      {/* Upload spinner */}
                       {item.uploading && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-white/60">
-                          <svg
-                            className="h-5 w-5 animate-spin text-blue-600"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                          >
-                            <circle
-                              className="opacity-25"
-                              cx="12"
-                              cy="12"
-                              r="10"
-                              stroke="currentColor"
-                              strokeWidth="4"
-                            />
-                            <path
-                              className="opacity-75"
-                              fill="currentColor"
-                              d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z"
-                            />
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-white/70">
+                          <svg className="h-5 w-5 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
                           </svg>
+                          <span className="text-[9px] font-medium text-blue-700">Uploading…</span>
                         </div>
                       )}
+                      {/* Background removal spinner */}
+                      {item.processingBg && (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-white/70">
+                          <svg className="h-5 w-5 animate-spin text-amber-500" viewBox="0 0 24 24" fill="none">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                          </svg>
+                          <span className="text-[9px] font-medium text-amber-700">Cutting out…</span>
+                        </div>
+                      )}
+                      {/* Done badge */}
+                      {!item.uploading && !item.processingBg && item.bgRemovedUrl && (
+                        <span className="absolute bottom-1 right-1 flex h-4 w-4 items-center justify-center rounded-full bg-green-500">
+                          <svg className="h-2.5 w-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        </span>
+                      )}
                       {/* Remove button */}
-                      {!item.uploading && (
+                      {!item.uploading && !item.processingBg && (
                         <button
                           onClick={() => handleRemoveFurniture(item.id)}
                           className="absolute top-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors text-xs leading-none"
@@ -375,10 +416,15 @@ export default function FurnishRoom({ property }: FurnishRoomProps) {
               />
             </div>
 
-            {/* Uploading notice */}
+            {/* Processing notices */}
             {isAnyUploading && (
+              <p className="mb-3 text-xs text-blue-600 font-medium">
+                Uploading…
+              </p>
+            )}
+            {!isAnyUploading && isAnyProcessingBg && (
               <p className="mb-3 text-xs text-amber-600 font-medium">
-                Uploading furniture photos… please wait before generating.
+                Cutting out furniture — this makes placement much more accurate.
               </p>
             )}
 
